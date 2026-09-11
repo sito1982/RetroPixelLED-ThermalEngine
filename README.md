@@ -24,6 +24,7 @@ Se integra soporte nativo para mandos a distancia, permitiendo navegar por el Me
 
 * **🔤 Selección de estilo de fuente en la PWA:** Se puede elegir entre los estilos Bold, SemiBold, Regular y Light.
 * **🏠 Integración con Home Assistant**: Se integra con Home Asistant mediante integración REST. **Más info en 10. 🏠 Integración con Home Assistant**
+* **📡 Imagen Externa en tiempo real:** Nuevo endpoint TCP :8889 que recibe frames RGB565 (128×32) de una app externa —p. ej. monitor de CPU/temperatura— los muestra al instante interrumpiendo los GIFs y vuelve a la playlist al cesar el stream. **Más info en [PROTOCOLO_IMAGEN_EXTERNA.md](PROTOCOLO_IMAGEN_EXTERNA.md).**
 ---
 
 ## 🕹️ Integración Especial: Modo Arcade (Batocera, Recalbox & RePlayOS)
@@ -37,6 +38,20 @@ A través de una jerarquía de archivos inteligente y optimizada para el hardwar
 
 
 Para más información ir al punto `9. 🕹️ Integración con Batocera, Recalbos o ReplayOS (Arcade)`
+
+---
+
+## 📡 Imagen Externa en Tiempo Real (monitor hardware → DMD)
+
+Además del modo Arcade, el firmware expone un **receptor de frames dedicado** para que cualquier aplicación externa (Python en Linux/Windows, servicio de monitorización, etc.) pinte el DMD al instante:
+
+* **Transporte:** TCP puerto **8889**, conexión persistente, sin ACK (*fire & forget*).
+* **Formato:** RGB565 little-endian 128×32 (8192 bytes) + cabecera de 4 bytes (`AA 55 80 20`).
+* **Comportamiento:** al llegar frames interrumpe los GIFs; al cesar el stream vuelve solo a la playlist (timeout configurable `IMAGE_TIMEOUT`, defecto 1000 ms). Tiene **prioridad sobre el modo arcade**.
+* **Rendimiento validado:** 12 FPS estables (~96 KB/s), latencia de pintado < 5 ms/frame, sin parpadeo (pintado dual en ambos paneles).
+* **API REST:** `GET /status` incluye `imagenExterna: 0/1`; `GET/POST /config` incluye `IMAGE_TIMEOUT`.
+
+Documentación completa del protocolo, ejemplo de emisor y diagnóstico en **[PROTOCOLO_IMAGEN_EXTERNA.md](PROTOCOLO_IMAGEN_EXTERNA.md)**.
 
 ---
 
@@ -64,6 +79,7 @@ Para más información ir al punto `9. 🕹️ Integración con Batocera, Recalb
 | **📂 Servidor FTP Integrado** | Protocolo de transferencia de archivos inalámbrico directo a la tarjeta SD del ESP32. | **Comodidad.** Gestiona tus playlists, archivos `.ini` y `.json` sin necesidad de extraer la MicroSD. |
 | **📡 Control Remoto IR** | Mapeado dinámico de funciones y navegación de menús mediante receptor infrarrojo. | **Control a distancia.** Maneja el brillo, apaga o enciende el panel y navega por el menú cómodamente desde un mando. |
 | **🎨 Configuración de Color** | Parámetro `colorOrder` (RGB/RBG/GBR) procesado dinámicamente desde el `config.ini`. | **Versatilidad.** Compatibilidad con cualquier panel HUB75 del mercado sin necesidad de reprogramar. |
+| **📡 Imagen Externa en Tiempo Real** | Receptor TCP :8889 de frames RGB565 128×32 con `ESTADO_IMAGEN_EXTERNA`, timeout de retorno a GIFs configurable (`IMAGE_TIMEOUT`) y prioridad sobre arcade; estado expuesto en `GET /status`. | **Monitorización en vivo.** Muestra CPU, temperatura o cualquier gráfico de una app externa a 12 FPS sin parpadeo. Ver [PROTOCOLO_IMAGEN_EXTERNA.md](PROTOCOLO_IMAGEN_EXTERNA.md). |
 ---
 ### 🖥️ Estructura del Menú OSD (Navegación Inteligente)
 

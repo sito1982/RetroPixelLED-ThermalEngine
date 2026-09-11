@@ -15,6 +15,7 @@ void registrarRutasWeb() {
 
     server.begin();
     tcpServer.begin();
+    imageServer.begin();
     Serial.println(F("[HTTP] Servidor iniciado y Panel listo."));
 }
 
@@ -30,6 +31,7 @@ void registrarRutasEstado() {
         doc["clockColorIndex"] = clockColorIndex;
         doc["textEnable"]      = textEnable ? 1 : 0;
         doc["textoActivo"]     = (estadoActual == ESTADO_TEXTO) ? 1 : 0;
+        doc["imagenExterna"]   = imagenExternaActiva ? 1 : 0;
         doc["isSleeping"]      = isSleeping ? 1 : 0;
 
         String activa = String(playlistActiva);
@@ -216,6 +218,7 @@ void registrarRutasConfig() {
         doc["CLOCK_STYLE"]      = clockStyle;
         doc["TRANSITION_ENABLE"]= transitionEnable;
         doc["CLOCK_COLOR"]      = clockColorIndex;
+        doc["IMAGE_TIMEOUT"]    = imageTimeoutMs;
         doc["WEATHER_ENABLE"]   = weatherEnable;
         doc["CITY"]             = weatherCity;
         doc["API_KEY"]          = weatherKey;
@@ -278,6 +281,7 @@ void registrarRutasConfig() {
         if (doc.containsKey("CLOCK_DURATION"))clockDuration = doc["CLOCK_DURATION"];
         if (doc.containsKey("CLOCK_STYLE"))   clockStyle = doc["CLOCK_STYLE"];
         if (doc.containsKey("TRANSITION_ENABLE")) transitionEnable = doc["TRANSITION_ENABLE"];
+        if (doc.containsKey("IMAGE_TIMEOUT")) imageTimeoutMs = constrain(doc["IMAGE_TIMEOUT"].as<long>(), 200, 5000);
         if (doc.containsKey("CLOCK_COLOR")) {
             clockColorIndex = doc["CLOCK_COLOR"];
             if (clockColorIndex < 0 || clockColorIndex >= TOTAL_COLORES) clockColorIndex = 0;

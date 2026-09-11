@@ -126,6 +126,23 @@ int y_offset = 0;
 const char* ntpServer = "pool.ntp.org";
 WebServer server(80);
 WiFiServer tcpServer(8888);
+WiFiServer imageServer(8889);
+
+// --- IMAGEN EXTERNA (monitor hardware: TCP :8889, RGB565 128x32) ---
+#define IMAGE_WIDTH 128
+#define IMAGE_HEIGHT 32
+#define IMAGE_FRAME_SIZE (IMAGE_WIDTH * IMAGE_HEIGHT * 2)
+#define IMAGE_MAGIC_0 0xAA
+#define IMAGE_MAGIC_1 0x55
+static uint16_t* imageFrameBuffer = nullptr;
+static WiFiClient imageClient;
+unsigned long ultimoFrameImagenExterna = 0;
+unsigned long imageTimeoutMs = 1000;
+bool imagenExternaActiva = false;
+// Acumuladores para recepcion incremental (cabecera + payload por partes)
+static uint8_t imageHeader[4];
+static size_t imageHeaderLen = 0;
+static size_t imagePayloadLen = 0;
 
 // Variables de estado y Navegación OSD
 bool confiAppEnable = true;
@@ -133,6 +150,7 @@ enum EstadoSistema {
     ESTADO_GIFS,
     ESTADO_ARCADE,
     ESTADO_TEXTO,
+    ESTADO_IMAGEN_EXTERNA,
     ESTADO_CONFIG_APP,
     ESTADO_MENU_PRINCIPAL,
     ESTADO_SUBMENU_PLAYLIST,
@@ -172,7 +190,9 @@ bool interrumpirReproduccion = false;
 bool modoMantenimiento = false;
 
 // Variables de idioma
-JsonDocument idiomaDoc; 
+// FIX compilación: JsonDocument base tiene destructor protegido en ArduinoJson 6.x
+// moderno. DynamicJsonDocument(8192) cubre los JSON de idioma (~4KB).
+DynamicJsonDocument idiomaDoc(8192);
 bool idiomaCargado = false;
 
 // Variables FTP
@@ -340,6 +360,9 @@ void leerConfigIni() {
         else if (clave == "WEATHER_INT") weatherInterval = valor.toInt();
         else if (clave == "WEATHER_MSG") strlcpy(weatherCustomMsg, valor.c_str(), sizeof(weatherCustomMsg));
 
+        // [IMAGEN EXTERNA]
+        else if (clave == "IMAGE_TIMEOUT") imageTimeoutMs = constrain(valor.toInt(), 200, 5000);
+
         // [LANGUAGE]
         else if (clave == "LANGUAGE") strlcpy(idiomaActivo, valor.c_str(), sizeof(idiomaActivo));
 
@@ -386,7 +409,7 @@ void guardarConfigIni() {
 
     // Cabecera Principal
     configFile.println(F("# ============================================================"));
-    configFile.printf(F("# 🕹️ RETRO PIXEL LED LITE - CONFIGURACION v%s\n"), FIRMWARE_VERSION);
+    configFile.printf("# RETRO PIXEL LED LITE - CONFIGURACION v%s\n", FIRMWARE_VERSION);
     configFile.println(F("# ============================================================"));
     configFile.println(F("# Nota: No dejes espacios alrededor del símbolo '='."));
     configFile.println(F("# Ejemplo correcto: BRIGHTNESS=40\n"));
@@ -452,6 +475,10 @@ void guardarConfigIni() {
     configFile.printf("WEATHER_INT=%d\n", weatherInterval);
     configFile.println(F("# Texto que se muestra encima del reloj"));
     configFile.printf("WEATHER_MSG=%s\n\n", weatherCustomMsg);
+
+    configFile.println(F("[IMAGEN_EXTERNA]"));
+    configFile.println(F("# Timeout sin frames para volver a GIFs (ms): 200 a 5000"));
+    configFile.printf("IMAGE_TIMEOUT=%lu\n\n", imageTimeoutMs);
 
     configFile.println(F("[LANGUAGE]"));
     configFile.println(F("# Indica el Idioma (Nombre del archivo sin .json: ES, EN, FR...)"));
@@ -1955,6 +1982,8 @@ void mostrarRelojLite(bool conTransicion = false) {
         leerControlRemoto();
         server.handleClient();
         verificarMarquesinaTCP();
+        handleImagenExterna(); // Imagen externa tambien durante el reloj
+        verificarTimeoutImagenExterna();
 
         if (isSleeping || estadoActual != ESTADO_GIFS) {
             interrumpirReproduccion = true;
@@ -3338,6 +3367,119 @@ void verificarMarquesinaTCP() {
 }
 
 // ====================================================================
+//          RECEPTOR IMAGEN EXTERNA (monitor hardware, TCP :8889)
+// ====================================================================
+// Protocolo (fire & forget, sin ACK):
+//   TCP <IP>:8889
+//   Frame: [0xAA][0x55][0x80][0x20] + 8192 bytes RGB565 LE (128x32, row-major)
+//   Sin frame durante imageTimeoutMs -> vuelve a GIFs.
+//   Tiene prioridad sobre arcade (8888): mientras este activa, arcade no pinta.
+void handleImagenExterna() {
+    if (!imageFrameBuffer) return;
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    // 1. ¿Cliente nuevo? El ultimo que conecta manda (igual que arcade).
+    //    Al cambiar de cliente se reinicia la acumulacion parcial.
+    WiFiClient nuevoClient = imageServer.available();
+    if (nuevoClient) {
+        if (imageClient) imageClient.stop();
+        imageClient = nuevoClient;
+        imageHeaderLen = 0;
+        imagePayloadLen = 0;
+    }
+
+    if (!imageClient || (!imageClient.connected() && !imageClient.available())) {
+        if (imageClient) imageClient.stop();
+        imageHeaderLen = 0;
+        imagePayloadLen = 0;
+        return;
+    }
+
+    // 2. Acumulacion INCREMENTAL (robusto ante segmentacion TCP y ventana
+    //    reducida de lwIP): leemos lo que haya en cada sondeo hasta completar
+    //    cabecera (4B) + payload (8192B). Misma filosofia que el modo arcade.
+    for (int i = 0; i < 64 && imageHeaderLen < sizeof(imageHeader) && imageClient.available(); i++) {
+        int n = imageClient.read(imageHeader + imageHeaderLen,
+                                 sizeof(imageHeader) - imageHeaderLen);
+        if (n <= 0) break;
+        imageHeaderLen += (size_t)n;
+    }
+    if (imageHeaderLen < sizeof(imageHeader)) {
+        // Cabecera aun incompleta: si el emisor ya cerro, descartamos.
+        if (!imageClient.connected()) {
+            imageClient.stop();
+            imageHeaderLen = 0;
+            imagePayloadLen = 0;
+        }
+        return;
+    }
+    if (imageHeader[0] != IMAGE_MAGIC_0 || imageHeader[1] != IMAGE_MAGIC_1 ||
+        imageHeader[2] != IMAGE_WIDTH || imageHeader[3] != IMAGE_HEIGHT) {
+        Serial.println(F("[IMAGEN] Cabecera invalida, descartando cliente."));
+        imageClient.stop();
+        imageHeaderLen = 0;
+        imagePayloadLen = 0;
+        return;
+    }
+
+    uint8_t* dstPayload = ((uint8_t*)imageFrameBuffer) + imagePayloadLen;
+    size_t faltaPayload = IMAGE_FRAME_SIZE - imagePayloadLen;
+    for (int i = 0; i < 64 && faltaPayload && imageClient.available(); i++) {
+        int n = imageClient.read(dstPayload, faltaPayload);
+        if (n <= 0) break;
+        dstPayload += n;
+        imagePayloadLen += (size_t)n;
+        faltaPayload -= (size_t)n;
+    }
+    if (imagePayloadLen < IMAGE_FRAME_SIZE) {
+        // Frame aun incompleto: si el emisor ya cerro, descartamos.
+        if (!imageClient.connected()) {
+            imageClient.stop();
+            imageHeaderLen = 0;
+            imagePayloadLen = 0;
+        }
+        return;
+    }
+
+    // Frame completo: reiniciamos acumuladores para el siguiente frame
+    // (la conexion persistente puede traer mas frames encadenados).
+    imageHeaderLen = 0;
+    imagePayloadLen = 0;
+
+    // 3. Transicion GIFs -> IMAGEN_EXTERNA (interrumpe reproduccion en curso).
+    if (!imagenExternaActiva || estadoActual != ESTADO_IMAGEN_EXTERNA) {
+        interrumpirReproduccion = true;
+        estadoActual = ESTADO_IMAGEN_EXTERNA;
+        imagenExternaActiva = true;
+        Serial.println(F("[IMAGEN] Stream externo activo, interrumpiendo GIFs."));
+    }
+
+    // 4. Volcado rapido: el frame RGB565 (128x32) cubre AMBOS paneles
+    //    (PANEL_CHAIN=2 -> 128px logicos). Sin fillScreen: el payload ya
+    //    cubre todo y el borrado previo era el parpadeo negro del panel 1.
+    display->drawRGBBitmap(0, 0, imageFrameBuffer, IMAGE_WIDTH, IMAGE_HEIGHT);
+    display->drawRGBBitmap(128, 0, imageFrameBuffer, IMAGE_WIDTH, IMAGE_HEIGHT);
+    display->flipDMABuffer();
+
+    ultimoFrameImagenExterna = millis();
+}
+
+void verificarTimeoutImagenExterna() {
+    if (!imagenExternaActiva) return;
+    if (millis() - ultimoFrameImagenExterna <= imageTimeoutMs) return;
+
+    imagenExternaActiva = false;
+    if (imageClient) imageClient.stop();
+
+    if (estadoActual == ESTADO_IMAGEN_EXTERNA) {
+        estadoActual = ESTADO_GIFS;
+        saliendoAGifs = true;
+        interrumpirReproduccion = true;
+        Serial.println(F("[IMAGEN] Timeout: volviendo a GIFs."));
+    }
+}
+
+// ====================================================================
 //                     MOTOR DE REPRODUCCIÓN GIFs
 // ====================================================================
 String obtenerSiguienteGifSD() {
@@ -3410,13 +3552,15 @@ void ejecutarModoGifLite() {
 
             // 1. Escuchamos siempre el servidor web (PWA, Ajustes, Temporizador...)
              server.handleClient();
-            if (arcadeEnable > 0) {
+            handleImagenExterna(); // Imagen externa RGB565 :8889 (prioritaria, no depende de arcadeEnable)
+            verificarTimeoutImagenExterna();
+            if (arcadeEnable > 0 && !imagenExternaActiva) {
                 verificarMarquesinaTCP(); // Batocera y Recalbox
                 if (arcadeEnable == 3) verificarReplayOSLite(); // ReplayOS
             }
 
             // 2. Salida inmediata si hay cambio de estado o botón
-            if (digitalRead(PIN_BOTON_MENU) == LOW || interrumpirReproduccion || (arcadeEnable > 0 && estadoActual == ESTADO_ARCADE)) {
+            if (digitalRead(PIN_BOTON_MENU) == LOW || interrumpirReproduccion || (arcadeEnable > 0 && estadoActual == ESTADO_ARCADE) || estadoActual == ESTADO_IMAGEN_EXTERNA) {
                 interrumpirReproduccion = true;
                 break;
             }
@@ -3433,10 +3577,16 @@ void ejecutarModoGifLite() {
                 if (arcadeEnable > 0) { 
                     verificarMarquesinaTCP();
                     if (arcadeEnable == 3) verificarReplayOSLite();
-                    if (estadoActual == ESTADO_ARCADE) {
+                    if (estadoActual == ESTADO_ARCADE || estadoActual == ESTADO_IMAGEN_EXTERNA) {
                         interrumpirReproduccion = true;
                         break; 
                     }
+                }
+                handleImagenExterna(); // Sondeo tambien durante la espera entre frames de GIF
+                verificarTimeoutImagenExterna();
+                if (estadoActual == ESTADO_IMAGEN_EXTERNA) {
+                    interrumpirReproduccion = true;
+                    break;
                 }
                 if (digitalRead(PIN_BOTON_MENU) == LOW) break;
                 yield(); // Mantiene estable el WiFi
@@ -3796,6 +3946,15 @@ void setup() {
         registrarRutasWeb();
     }
 
+    // Buffer para imagen externa RGB565 (PSRAM si hay, si no heap)
+    imageFrameBuffer = (uint16_t*)ps_malloc(IMAGE_FRAME_SIZE);
+    if (!imageFrameBuffer) imageFrameBuffer = (uint16_t*)malloc(IMAGE_FRAME_SIZE);
+    if (!imageFrameBuffer) {
+        Serial.println(F("[IMAGEN] ERROR: sin RAM para buffer RGB565"));
+    } else {
+        Serial.println(F("[IMAGEN] Servidor :8889 listo (RGB565 128x32)."));
+    }
+
     if (mostrarIP) {
         // 1. DIBUJO DEL MÓVIL
     uint16_t colorMovil = display->color565(70, 70, 70);       // Gris oscuro para la carcasa externa
@@ -3894,10 +4053,19 @@ void loop() {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-        if (arcadeEnable > 0) 
+        handleImagenExterna();
+        verificarTimeoutImagenExterna();
+        if (arcadeEnable > 0 && !imagenExternaActiva)
         verificarMarquesinaTCP();
-        if (arcadeEnable == 3) 
-        verificarReplayOSLite(); 
+        if (arcadeEnable == 3 && !imagenExternaActiva)
+        verificarReplayOSLite();
+    } else {
+        verificarTimeoutImagenExterna();
+    }
+
+    if (estadoActual == ESTADO_IMAGEN_EXTERNA) {
+        delay(5);
+        return;
     }
 
     if (estadoActual == ESTADO_ARCADE) {
