@@ -21,10 +21,10 @@
 // ====================================================================
 //                     CONSTANTES & FIRMWARE LITE
 // ====================================================================
-#define FIRMWARE_VERSION "3.1.2" // Se añaden distintas fuentes seleccionables desde la APP e Integración con HA por REST.
-#define CURRENT_VERSION_NUM 312 // Versión numérica para comparar (2.1.0 -> 210)
-#define GITHUB_VERSION_URL "https://github.com/fjgordillo86/RetroPixelLED-Lite/raw/refs/heads/main/docs/version.json"
-#define GITHUB_RAW_BASE_URL "https://raw.githubusercontent.com/fjgordillo86/RetroPixelLED-Lite/main/Contenido%20SD/idioma/"
+#define FIRMWARE_VERSION "3.2.0" // Receptor imagen externa RGB565 :8889 (monitor hardware) + fixes compilacion.
+#define CURRENT_VERSION_NUM 320 // Versión numérica para comparar (3.2.0 -> 320)
+#define GITHUB_VERSION_URL "https://github.com/sito1982/RetroPixelLED-ThermalEngine/raw/refs/heads/main/docs/version.json"
+#define GITHUB_RAW_BASE_URL "https://raw.githubusercontent.com/sito1982/RetroPixelLED-ThermalEngine/main/Contenido%20SD/idioma/"
 #define CONFIG_FILE "/config.ini"
 
 // --- PINES HUB75 ---

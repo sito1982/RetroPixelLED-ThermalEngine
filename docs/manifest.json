@@ -1,6 +1,6 @@
 {
-  "name": "Retro Pixel LED Lite",
-  "version": "3.1.2",
+  "name": "ThermalEngine DMD",
+  "version": "3.2.0",
   "new_install_prompt_erase": true,
   "builds": [
     {

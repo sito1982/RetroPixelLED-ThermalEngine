@@ -336,6 +336,7 @@
     <button class="modeTab active" id="tabGif" data-mode="gif">🎞 GIF</button>
     <button class="modeTab" id="tabReloj" data-mode="reloj">🕐 RELOJ</button>
     <button class="modeTab" id="tabTexto" data-mode="texto">🔤 TEXTO</button>
+    <button class="modeTab" id="tabImagen" data-mode="imagen">📡 IMAGEN</button>
   </div>
 
   <!-- ---------- PANEL: MODO GIF ---------- -->
@@ -426,6 +427,52 @@
       <button class="big" id="send">▶ ENVIAR</button>
       <button class="big" id="stop">■ STOP</button>
     </div>
+  </div>
+
+  <!-- ---------- PANEL: MODO IMAGEN EXTERNA ---------- -->
+  <!-- El navegador no puede abrir sockets TCP crudos: el stream RGB565 :8889
+       lo envía una app externa (p. ej. Thermal-Engine). Aquí: estado en vivo,
+       vista previa local y ajuste del timeout de retorno a GIFs. -->
+  <div class="modePanel" id="modeImagen">
+    <section>
+      <div class="label-row"><span class="l">Estado del stream</span></div>
+      <div class="applyModeRow">
+        <span id="imgStreamStatus">● Sin stream (GIFs)</span>
+        <button class="pill" id="imgRefreshBtn">Actualizar</button>
+      </div>
+    </section>
+
+    <div class="panel-frame">
+      <div class="rivet-row">
+        <div class="rivet"></div><div class="rivet"></div><div class="rivet"></div><div class="rivet"></div>
+      </div>
+      <div class="screen">
+        <canvas id="imgPreview" width="128" height="32"></canvas>
+      </div>
+      <div class="panel-caption">
+        <span>VISTA PREVIA (patrón local 128×32)</span>
+        <span>TCP :8889 · RGB565</span>
+      </div>
+    </div>
+
+    <section>
+      <div class="label-row"><span class="l">Timeout retorno a GIFs</span><span class="v" id="imgTimeoutVal">1000 ms</span></div>
+      <input type="range" id="imgTimeout" min="200" max="5000" step="100" value="1000">
+    </section>
+
+    <div class="btnrow">
+      <button class="big" id="imgSaveTimeout">💾 GUARDAR (reinicia)</button>
+    </div>
+
+    <section>
+      <div class="label-row"><span class="l">Cómo enviar</span></div>
+      <div class="cfgWarning" style="display:block;">
+        Desde tu app (misma red): TCP <span id="imgTarget">IP:8889</span>, frame =
+        <code>AA 55 80 20</code> + 8192 bytes RGB565 LE (128×32).
+        Sin stream 1&nbsp;s → el panel vuelve solo a GIFs.
+        <a href="https://github.com/sito1982/RetroPixelLED-ThermalEngine/blob/main/PROTOCOLO_IMAGEN_EXTERNA.md" target="_blank" rel="noopener">Ver protocolo</a>
+      </div>
+    </section>
   </div>
 
   <div class="status" id="statusMsg"></div>
@@ -904,8 +951,12 @@ function aplicarEstadoPanelAUI(st){
   panelPlayModeActual = st.playMode;
   actualizarClockModeUI(panelPlayModeActual);
 
+  // Imagen externa: estado del stream :8889
+  if (typeof actualizarImagenUI === 'function') actualizarImagenUI(st.imagenExterna);
+
   // Pestaña inicial: si hay texto reproduciéndose ahora mismo, abrimos ahí
-  if (st.textoActivo) selectMode('texto', false);
+  if (st.imagenExterna) selectMode('imagen', false);
+  else if (st.textoActivo) selectMode('texto', false);
   else selectMode(st.playMode == 1 ? 'reloj' : 'gif', false);
 }
 /* ---------- Encendido y Apagado (Botón principal Home) ---------- */
@@ -970,6 +1021,7 @@ function selectMode(mode, avisarPanel = true){
   document.getElementById('modeGif').classList.toggle('active', mode === 'gif');
   document.getElementById('modeReloj').classList.toggle('active', mode === 'reloj');
   document.getElementById('modeTexto').classList.toggle('active', mode === 'texto');
+  document.getElementById('modeImagen').classList.toggle('active', mode === 'imagen');
 
   if (mode === 'reloj') actualizarClockModeUI(panelPlayModeActual);
 
@@ -1010,6 +1062,65 @@ document.getElementById('applyClockModeBtn').addEventListener('click', async () 
     actualizarClockModeUI(1);
   }
 });
+
+/* ---------- Modo IMAGEN EXTERNA (stream RGB565 :8889) ---------- */
+// El navegador no puede abrir TCP crudo: aquí solo estado (/status),
+// vista previa local y timeout (POST /config; reinicia, como en Ajustes).
+function actualizarImagenUI(imagenExterna){
+  const el = document.getElementById('imgStreamStatus');
+  if (!el) return;
+  if (imagenExterna){
+    el.textContent = '● Recibiendo stream :8889';
+    el.style.color = '#5FDB7E';
+  } else {
+    el.textContent = '● Sin stream (GIFs)';
+    el.style.color = '';
+  }
+  const ip = (typeof ipEl !== 'undefined' && ipEl.value.trim()) || 'IP';
+  document.getElementById('imgTarget').textContent = ip + ':8889';
+}
+
+(function dibujarPreviewImagen(){
+  const cv = document.getElementById('imgPreview');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const cols = ['#FF0000','#00FF00','#0000FF','#FFFF00','#00FFFF','#FF00FF','#FFFFFF','#FF8000'];
+  for (let i = 0; i < 8; i++){
+    ctx.fillStyle = cols[i];
+    ctx.fillRect(i * 16, 0, 16, 32);
+  }
+})();
+
+const imgTimeoutEl = document.getElementById('imgTimeout');
+imgTimeoutEl.addEventListener('input', () => {
+  document.getElementById('imgTimeoutVal').textContent = imgTimeoutEl.value + ' ms';
+});
+
+document.getElementById('imgRefreshBtn').addEventListener('click', () => {
+  cargarEstadoPanel();
+});
+
+document.getElementById('imgSaveTimeout').addEventListener('click', async () => {
+  const ip = ipEl.value.trim();
+  if (!ip){ setStatus('Configura la IP del panel (⚙)', 'err'); return; }
+  const ms = Math.min(5000, Math.max(200, parseInt(imgTimeoutEl.value, 10) || 1000));
+  try {
+    const res = await fetch(`http://${ip}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ IMAGE_TIMEOUT: ms }),
+      signal: AbortSignal.timeout(5000)
+    });
+    setStatus(res.ok ? `Timeout guardado (${ms} ms). El panel se reinicia…` : 'Error al guardar', res.ok ? '' : 'err');
+  } catch (e){
+    setStatus('No se pudo conectar con el panel', 'err');
+  }
+});
+
+// Sondeo ligero del estado mientras la pestaña está visible
+setInterval(() => {
+  if (typeof currentTab !== 'undefined' && currentTab === 'imagen') cargarEstadoPanel();
+}, 2500);
 
 /* ---------- Modo GIF: playlist activa + aleatorio ---------- */
 document.getElementById('plCurrentBtn').addEventListener('click', abrirPlaylists);
