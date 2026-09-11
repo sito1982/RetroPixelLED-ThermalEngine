@@ -1,4 +1,4 @@
-# ✨ Retro Pixel LED Lite v3.1.2
+# ✨ Retro Pixel LED + ThermalEngine
 **[🇪🇸 Español](https://github.com/fjgordillo86/RetroPixelLED-Lite/blob/main/README.md) | [🇫🇷 Français](https://github.com/fjgordillo86/RetroPixelLED-Lite/blob/main/Frances/README.md)**
 
 ### **[✈️ Unirse al Grupo de Telegram: Retro Pixel LED para estár al día de las actualizaciones](https://t.me/RetroPixelLed)**
